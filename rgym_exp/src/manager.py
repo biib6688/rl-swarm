@@ -136,21 +136,32 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         bonus = min(my_signal, 7)
         return random.randint(base + bonus // 2, 14)
 
-    def _try_submit_to_chain(self, total_signals):
+    def _try_submit_to_chain(self, signal_by_agent):
         """Submit accumulated signals to blockchain after round completion"""
 
         try:
+            # Calculate total signals from the dict
+            if isinstance(signal_by_agent, dict):
+                total_signals = sum(signal_by_agent.values())
+            else:
+                total_signals = signal_by_agent
+            
             get_logger().info(f"Submitting round {self.state.round} results to blockchain...")
+            get_logger().info(f"Signal by agent: {signal_by_agent}")
             get_logger().info(f"Total signals for this round: {total_signals}")
 
-            # Submit reward
+            # Submit reward - use total_signals (int) instead of signal_by_agent (dict)
             self.coordinator.submit_reward(
                 self.state.round, 0, int(total_signals), self.peer_id
             )
             get_logger().info(f"Successfully submitted reward to blockchain for round {self.state.round}")
 
-            # Submit winners (tạm thời dùng chính peer_id làm max agent)
-            max_agent = self.peer_id
+            # Submit winners - find max agent from signal_by_agent
+            if isinstance(signal_by_agent, dict) and signal_by_agent:
+                max_agent = max(signal_by_agent.keys(), key=lambda k: signal_by_agent[k])
+            else:
+                max_agent = self.peer_id
+            
             self.coordinator.submit_winners(self.state.round, [max_agent], self.peer_id)
             get_logger().info(f"Successfully submitted winners to blockchain for round {self.state.round}")
 

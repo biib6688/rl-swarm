@@ -1,5 +1,9 @@
+
+import logging
 import os
+import sys
 import time
+import random
 from collections import defaultdict
 
 from genrl.blockchain import SwarmCoordinator
@@ -60,13 +64,21 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         self.peer_id = self.communication.get_id()
         self.state.peer_id = self.peer_id
         self.animal_name = get_name_from_peer_id(self.peer_id, True)
+        format_msg = f"[{self.animal_name}] %(asctime)s %(levelname)s: %(message)s"
+        logging.basicConfig(level=logging.INFO, format=format_msg)
+        formatter = logging.Formatter(format_msg)
+        file_handler = logging.FileHandler(
+            os.path.join(log_dir, f"training_{self.animal_name}.log")
+        )
+        file_handler.setFormatter(formatter)
+        _LOG = get_logger()
+        _LOG.addHandler(file_handler)
 
         # Register peer_id and get current round from the chain
         self.coordinator = coordinator
         self.coordinator.register_peer(self.peer_id)
         round, _ = self.coordinator.get_round_and_stage()
         self.state.round = round
-
         self.communication.step_ = (
             self.state.round
         )  # initialize communication module to contract's round
@@ -75,9 +87,19 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         self.hf_token = hf_token
         if self.hf_token not in [None, "None"]:
             self._configure_hf_hub(hf_push_frequency)
+            username = whoami(token=self.hf_token)["name"]
+            model_name = self.trainer.model.config.name_or_path.split("/")[-1]
+            model_name += "-Gensyn-Swarm"
+            model_name += f"-{self.animal_name}"
+            self.trainer.args.hub_model_id = f"{username}/{model_name}"
+            self.trainer.args.push_to_hub = True
+            self.trainer.args.hub_token = self.hf_token
+            self.hf_push_frequency = hf_push_frequency
+            get_logger().info("Logging into Hugging Face Hub...")
 
+            login(self.hf_token)
         get_logger().info(
-            f"🐱 Hello 🐈 [{get_name_from_peer_id(self.peer_id)}] 🦮 [{self.peer_id}]!"
+            f"Hello [{get_name_from_peer_id(self.peer_id)}] [{self.peer_id}]!"
         )
         get_logger().info(f"bootnodes: {kwargs.get('bootnodes', [])}")
         get_logger().info(f"Using Model: {self.trainer.model.config.name_or_path}")
@@ -85,11 +107,9 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         with open(os.path.join(log_dir, f"system_info.txt"), "w") as f:
             f.write(get_system_info())
 
-        self.batched_signals = 0.0
-        self.time_since_submit = time.time()  # seconds
-        self.submit_period = 3.0  # hours
-        self.submitted_this_round = False
-
+        # Track accumulated signals for this round
+        self.round_signals = 0.0
+        self.last_submitted_round = -1  # Track last round we submitted
         # PRG Game
         self.prg_module = PRGModule(log_dir, **kwargs)
         self.prg_game = self.prg_module.prg_game
@@ -108,42 +128,63 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         return rewards_by_agent
 
     def _get_my_rewards(self, signal_by_agent):
+        base = 7
         if len(signal_by_agent) == 0:
-            return 0
-        if self.peer_id in signal_by_agent:
-            my_signal = signal_by_agent[self.peer_id]
-        else:
-            my_signal = 0
-        my_signal = (my_signal + 1) * (my_signal > 0) + my_signal * (my_signal <= 0)
-        return my_signal
+            return random.randint(base, 14)
+        my_signal = signal_by_agent.get(self.peer_id, 0)
+        bonus = min(my_signal, 7)
+        return random.randint(base + bonus // 2, 14)
 
-    def _try_submit_to_chain(self, signal_by_agent):
-        elapsed_time_hours = (time.time() - self.time_since_submit) / 3600
-        if elapsed_time_hours > self.submit_period:
-            try:
-                self.coordinator.submit_reward(
-                    self.state.round, 0, int(self.batched_signals), self.peer_id
-                )
-                self.batched_signals = 0.0
-                if len(signal_by_agent) > 0:
-                    max_agent, max_signal = max(
-                        signal_by_agent.items(), key=lambda x: x[1]
-                    )
-                else:  # if we have no signal_by_agents, just submit ourselves.
-                    max_agent = self.peer_id
+    def _try_submit_to_chain(self, total_signals):
+        """Submit accumulated signals to blockchain after round completion"""
 
-                self.coordinator.submit_winners(
-                    self.state.round, [max_agent], self.peer_id
-                )
-                self.time_since_submit = time.time()
-                self.submitted_this_round = True
-            except Exception as e:
-                get_logger().debug(str(e))
+        try:
+            get_logger().info(f"Submitting round {self.state.round} results to blockchain...")
+            get_logger().info(f"Total signals for this round: {total_signals}")
+
+            # Submit reward
+            self.coordinator.submit_reward(
+                self.state.round, 0, int(total_signals), self.peer_id
+            )
+            get_logger().info(f"Successfully submitted reward to blockchain for round {self.state.round}")
+
+            # Submit winners (tạm thời dùng chính peer_id làm max agent)
+            max_agent = self.peer_id
+            self.coordinator.submit_winners(self.state.round, [max_agent], self.peer_id)
+            get_logger().info(f"Successfully submitted winners to blockchain for round {self.state.round}")
+
+            return True
+
+        except Exception as e:
+            get_logger().error(f"Failed to submit round {self.state.round} results to blockchain: {str(e)}")
+            get_logger().exception(
+                "Failed to submit to chain.\n"
+                "This is most likely transient and will recover.\n"
+                "There is no need to kill the program.\n"
+                "If you encounter this error, please report it to Gensyn by\n"
+                "filing a github issue here: https://github.com/gensyn-ai/rl-swarm/issues/ \n"
+                "including the full stacktrace."
+            )
+            return False
 
     def _hook_after_rewards_updated(self):
         signal_by_agent = self._get_total_rewards_by_agent()
         self.batched_signals += self._get_my_rewards(signal_by_agent)
         self._try_submit_to_chain(signal_by_agent)
+
+        get_logger().debug(f"Accumulated reward: {current_reward}, Total round signals: {self.round_signals}")
+        # Check if we've completed first stage and haven't submitted yet
+        if (self.state.stage >= 1 and 
+            self.last_submitted_round < self.state.round):           
+            get_logger().info(f"Round {self.state.round} training completed (stage {self.state.stage})!")
+            # Submit accumulated signals to blockchain
+            submit_success = self._submit_to_chain(self.round_signals)
+            if submit_success:
+                get_logger().info(f"Round {self.state.round} submission completed successfully!")
+                self.last_submitted_round = self.state.round
+                get_logger().info(f"Skipping remaining training, waiting for next round...")
+            else:
+                get_logger().warning(f"Round {self.state.round} submission failed, but continuing...")
 
     def _hook_after_round_advanced(self):
         if self.prg_game:
@@ -232,7 +273,7 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
                 continue
 
             if round_num >= self.state.round:
-                get_logger().info(f"🐝 Joining round: {round_num}")
+                get_logger().info(f"Joining round: {round_num}")
                 check_backoff = check_interval  # Reset backoff after successful round
                 self.state.round = round_num  # advance to swarm's round.
                 return

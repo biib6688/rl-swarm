@@ -53,26 +53,27 @@ class RGRewards:
                 raise e
         else:
             cumulative = correctness
-     
+
+
         scaled = [
-            int(7 + min(max(score, 0.0), 1.0) * 10)  
+            int(7 + min(max(float(score), 0.0), 1.0) * 10)
             for score in cumulative
         ]
-        return scaled
-    
+        return [int(x) for x in scaled] 
+
     def __call__(self, game_state):
         completions, answers, metadata = parse_game_state(game_state, self.stage)
         rewards = {}  # Key per agent
         for agent in completions:
             rewards[agent] = {}  # Will store a list per batch item
             for batch_id in completions[agent]:
-                rewards[agent][batch_id] = []
+                rewards[agent][batch_id] = []   # cần khởi tạo list
                 for node_idx, _ in enumerate(completions[agent][batch_id]):
-                    rewards[agent][batch_id].append(
-                        self.reward_fn(
-                            completions[agent][batch_id][node_idx],
-                            answers[agent][batch_id][node_idx],
-                            metadata[agent][batch_id][node_idx],
-                        )
+                    reward_vals = self.reward_fn(
+                        completions[agent][batch_id][node_idx],
+                        answers[agent][batch_id][node_idx],
+                        metadata[agent][batch_id][node_idx],
                     )
+                    reward_vals = [int(v) for v in reward_vals]  # ép tất cả về int chuẩn
+                    rewards[agent][batch_id].append(reward_vals)
         return rewards

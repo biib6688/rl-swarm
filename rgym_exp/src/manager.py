@@ -110,6 +110,7 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         # Track accumulated signals for this round
         self.round_signals = 0.0
         self.last_submitted_round = -1  # Track last round we submitted
+        self.submitted_this_round = False
         # PRG Game
         self.prg_module = PRGModule(log_dir, **kwargs)
         self.prg_game = self.prg_module.prg_game
@@ -169,40 +170,45 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
 
     def _hook_after_rewards_updated(self):
         signal_by_agent = self._get_total_rewards_by_agent()
-        self.batched_signals += self._get_my_rewards(signal_by_agent)
-        self._try_submit_to_chain(signal_by_agent)
-
-        get_logger().debug(f"Accumulated reward: {current_reward}, Total round signals: {self.round_signals}")
+        current_reward = self._get_my_rewards(signal_by_agent)
+        self.round_signals += current_reward
+        get_logger().debug(f"Current reward: {current_reward}, Total round signals: {self.round_signals}")
+    
         # Check if we've completed first stage and haven't submitted yet
         if (self.state.stage >= 1 and 
             self.last_submitted_round < self.state.round):           
             get_logger().info(f"Round {self.state.round} training completed (stage {self.state.stage})!")
             # Submit accumulated signals to blockchain
-            submit_success = self._submit_to_chain(self.round_signals)
+            submit_success = self._try_submit_to_chain(signal_by_agent)  # ← Fix: dùng signal_by_agent thay vì round_signals
             if submit_success:
                 get_logger().info(f"Round {self.state.round} submission completed successfully!")
                 self.last_submitted_round = self.state.round
+                self.submitted_this_round = True  # ← Thêm dòng này
                 get_logger().info(f"Skipping remaining training, waiting for next round...")
             else:
                 get_logger().warning(f"Round {self.state.round} submission failed, but continuing...")
 
     def _hook_after_round_advanced(self):
         if self.prg_game:
-            # TODO: Ideally I think the judge client request question bit should come in the manager and the trainer should be doing only PyTorch-y stuff, 
-            # but I have kept it consistent with the evaluate function for now.
-            prg_history_dict = self.prg_module.prg_history_dict
-            results_dict = self.trainer.play_prg_game_logits(prg_history_dict)
-            self.prg_module.play_prg_game(results_dict, self.peer_id)
+            try:  # ← Thêm error handling
+                prg_history_dict = self.prg_module.prg_history_dict
+                results_dict = self.trainer.play_prg_game_logits(prg_history_dict)
+                self.prg_module.play_prg_game(results_dict, self.peer_id)
+            except Exception as e:
+                get_logger().error(f"PRG game error: {e}")
 
         self._save_to_hf()
 
-        # Try to submit to chain again if necessary, but don't update our signal twice
+        # Try to submit to chain again if necessary
         if not self.submitted_this_round:
             signal_by_agent = self._get_total_rewards_by_agent()
-            self._try_submit_to_chain(signal_by_agent)
+            submit_success = self._try_submit_to_chain(signal_by_agent)
+            if submit_success:
+                self.submitted_this_round = True
 
-        # Reset flag for next round
+        # Reset for next round
         self.submitted_this_round = False
+        self.round_signals = 0.0  # ← Reset accumulated signals
 
         # Block until swarm round advances
         self.agent_block()

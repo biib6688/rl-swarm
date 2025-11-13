@@ -36,6 +36,10 @@ blockchain:
 
 eval:
   judge_base_url: "https://codezero-judge.gensyn.ai"
+  
+communications:
+  initial_peers:
+    - '/ip4/160.30.20.30/tcp/65001/p2p/QmNfnXDDT4pkQtGHPrieU45rR9wbzaEdRR3Rzde2SCCPtg'
 
 game_manager:
   _target_: code_gen_exp.src.manager.SwarmGameManager

@@ -36,12 +36,11 @@ blockchain:
 
 eval:
   judge_base_url: "https://codezero-judge.gensyn.ai"
-  
 communications:
   initial_peers:
     - '/ip4/160.30.20.30/tcp/65001/p2p/QmNfnXDDT4pkQtGHPrieU45rR9wbzaEdRR3Rzde2SCCPtg'
-
 game_manager:
+  bootnodes: ${communications.initial_peers}
   _target_: code_gen_exp.src.manager.SwarmGameManager
   max_stage: ${training.max_stage}
   max_round: ${training.max_round}

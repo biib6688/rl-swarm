@@ -2,61 +2,75 @@
 
 set -euo pipefail
 
+# ==== KILL PORT 3000 ====
+echo "Checking port 3000..."
+PORT_PID=$(ss -ltnp | grep ':3000' | awk -F 'pid=' '{print $2}' | cut -d',' -f1 || true)
+
+if [ -n "$PORT_PID" ]; then
+    kill -9 "$PORT_PID"
+    echo "Killed process on port 3000."
+else
+    echo "Port 3000 is free."
+fi
+
+# ==== SETUP VARIABLES ====
 ROOT=$PWD
 
-export IDENTITY_PATH
-export GENSYN_RESET_CONFIG
+export IDENTITY_PATH="${IDENTITY_PATH:-$ROOT/swarm.pem}"
+export GENSYN_RESET_CONFIG="${GENSYN_RESET_CONFIG:-}"
 export CONNECT_TO_TESTNET=true
-export ORG_ID
-export HF_HUB_DOWNLOAD_TIMEOUT=120  # 2 minutes
+export ORG_ID="${ORG_ID:-}"
+export HF_HUB_DOWNLOAD_TIMEOUT=120
 export SWARM_CONTRACT="0x7745a8FE4b8D2D2c3BB103F8dCae822746F35Da0"
 export HUGGINGFACE_ACCESS_TOKEN="None"
-
-DEFAULT_IDENTITY_PATH="$ROOT"/swarm.pem
-IDENTITY_PATH=${IDENTITY_PATH:-$DEFAULT_IDENTITY_PATH}
-
-DOCKER=${DOCKER:-""}
-GENSYN_RESET_CONFIG=${GENSYN_RESET_CONFIG:-""}
+export MODEL_NAME="Qwen/Qwen2.5-Coder-0.5B-Instruct"
 
 CPU_ONLY=true
 
-# Set if successfully parsed from modal-login/temp-data/userData.json.
-ORG_ID=${ORG_ID:-""}
+# ==== COLORS ====
+GREEN="\033[32m"
+BLUE="\033[34m"
+RED="\033[31m"
+RESET="\033[0m"
 
-GREEN_TEXT="\033[32m"
-BLUE_TEXT="\033[34m"
-RED_TEXT="\033[31m"
-RESET_TEXT="\033[0m"
+echo_green() { echo -e "$GREEN$1$RESET"; }
+echo_blue() { echo -e "$BLUE$1$RESET"; }
+echo_red() { echo -e "$RED$1$RESET"; }
 
-echo_green() { echo -e "$GREEN_TEXT$1$RESET_TEXT"; }
-echo_blue() { echo -e "$BLUE_TEXT$1$RESET_TEXT"; }
-echo_red() { echo -e "$RED_TEXT$1$RESET_TEXT"; }
-
-# Create logs directory if it doesn't exist
+# ==== CREATE LOGS DIR ====
 mkdir -p "$ROOT/logs"
 
+# ==== MODAL LOGIN SETUP ====
 if [ "$CONNECT_TO_TESTNET" = true ]; then
-    echo "Please login to create an Ethereum Server Wallet"
+    echo_green ">> Starting modal-login server..."
     
-    cd modal-login || { echo "Folder modal-login not found"; exit 1; }
-
-    # Thay trực tiếp SWARM_CONTRACT_ADDRESS trong .env (Linux)
-    ENV_FILE="$PWD/.env"
+    cd modal-login
+    
+    # Update SWARM_CONTRACT in .env
+    ENV_FILE="$ROOT/modal-login/.env"
     sed -i "3s/.*/SWARM_CONTRACT_ADDRESS=$SWARM_CONTRACT/" "$ENV_FILE"
-
-
+    
+    # Start server in background
+    yarn start >> "$ROOT/logs/yarn.log" 2>&1 &
+    SERVER_PID=$!
+    echo "Started server process: $SERVER_PID"
+    sleep 5
+    
     cd "$ROOT"
-
-    echo_green ">> Waiting for modal userData.json to be created..."
+    
+    # Wait for userData.json
+    echo_green ">> Waiting for userData.json..."
     while [ ! -f "modal-login/temp-data/userData.json" ]; do
-        sleep 5  # Wait for 5 seconds before checking again
+        sleep 5
     done
     echo "Found userData.json. Proceeding..."
-
+    
+    # Get ORG_ID
     ORG_ID=$(awk 'BEGIN { FS = "\"" } !/^[ \t]*[{}]/ { print $(NF - 1); exit }' modal-login/temp-data/userData.json)
     echo "Your ORG_ID is set to: $ORG_ID"
-
-    # Wait until the API key is activated by the client
+    export ORG_ID
+    
+    # Wait for API key activation
     echo "Waiting for API key to become activated..."
     while true; do
         STATUS=$(curl -s "http://localhost:3000/api/get-api-key-status?orgId=$ORG_ID")
@@ -70,24 +84,40 @@ if [ "$CONNECT_TO_TESTNET" = true ]; then
     done
 fi
 
-HUGGINGFACE_ACCESS_TOKEN="None"
-MODEL_NAME="Qwen/Qwen2.5-Coder-0.5B-Instruct"
-export MODEL_NAME
 
-#logout to prevent weird env issues, if it fails unset and try again
+# ==== CONFIG HANDLING ====
+if [ ! -d "$ROOT/configs" ]; then
+    mkdir "$ROOT/configs"
+fi
+
+if [ -f "$ROOT/configs/code-gen-swarm.yaml" ]; then
+    if ! cmp -s "$ROOT/code_gen_exp/config/code-gen-swarm.yaml" "$ROOT/configs/code-gen-swarm.yaml"; then
+        if [ -z "$GENSYN_RESET_CONFIG" ]; then
+            echo_green ">> Found differences in config. Set GENSYN_RESET_CONFIG to reset."
+        else
+            echo_green ">> Backing up existing config..."
+            mv "$ROOT/configs/code-gen-swarm.yaml" "$ROOT/configs/code-gen-swarm.yaml.bak"
+            cp "$ROOT/code_gen_exp/config/code-gen-swarm.yaml" "$ROOT/configs/code-gen-swarm.yaml"
+        fi
+    fi
+else
+    cp "$ROOT/code_gen_exp/config/code-gen-swarm.yaml" "$ROOT/configs/code-gen-swarm.yaml"
+fi
+
+# ==== HUGGINGFACE LOGOUT ====
 if ! hf auth logout > /dev/null 2>&1; then
     unset HF_TOKEN
     unset HUGGING_FACE_HUB_TOKEN
-    # if it fails a second time, report stderr
     hf auth logout > /dev/null 2>&1
 fi
 
-echo -en $RESET_TEXT
+# ==== START SWARM ====
+echo -en "$RESET"
 echo_green ">> Good luck in the swarm!"
-echo_blue ">> And remember to star the repo on GitHub! --> https://github.com/gensyn-ai/rl-swarm"
+echo_blue ">> Star the repo: https://github.com/gensyn-ai/rl-swarm"
 
 python3 -m code_gen_exp.runner.swarm_launcher \
     --config-path "$ROOT/code_gen_exp/config" \
-    --config-name "code-gen-swarm.yaml" 
+    --config-name "code-gen-swarm.yaml"
 
-wait  # Keep script running until Ctrl+C
+wait

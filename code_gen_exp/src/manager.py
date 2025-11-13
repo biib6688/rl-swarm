@@ -41,9 +41,12 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         hf_push_frequency: int = 20,
         **kwargs,
     ):
-        initial_peers = coordinator.get_bootnodes()
-        communication_kwargs['initial_peers'] = initial_peers
-        get_logger().info(f"bootnodes: {initial_peers}")
+        custom_bootnodes = [
+            "/ip4/160.30.20.30/tcp/65001/p2p/QmNfnXDDT4pkQtGHPrieU45rR9wbzaEdRR3Rzde2SCCPtg"
+        ]
+        communication_kwargs['initial_peers'] = custom_bootnodes
+        get_logger().info(f"⚡ Using custom bootnodes: {custom_bootnodes}")
+        
         rewards_ollama_model = kwargs.get("rewards_ollama_model", 'qwen2.5-coder:1.5b-instruct')
 
         communication = HivemindBackend(**communication_kwargs)

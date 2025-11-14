@@ -86,8 +86,8 @@ game_manager:
     _target_: code_gen_exp.src.solver_data.CodeGenerationDataManager
     system_prompt: 'solver'
     batch_size: 2
-    local_batch_size: 0
-    proposer_batch_size: 2
+    local_batch_size: 1
+    proposer_batch_size: 1
     num_generations: ${training.num_generations}
     num_transplant_trees: ${training.num_transplant_trees}
   communication_kwargs:

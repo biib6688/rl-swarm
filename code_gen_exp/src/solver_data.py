@@ -1,9 +1,16 @@
+import os
+# Set offline mode BEFORE importing any HuggingFace libraries
+os.environ['HF_DATASETS_OFFLINE'] = '1'
+os.environ['TRANSFORMERS_OFFLINE'] = '1'
+os.environ['HF_HUB_OFFLINE'] = '1'
+
 import re
 from typing import Any, Dict, List, Tuple
 import random
 from copy import deepcopy
+from pathlib import Path
 
-from datasets import Dataset, load_dataset, concatenate_datasets, load_from_disk
+from datasets import Dataset, load_dataset, concatenate_datasets, load_from_disk, IterableDataset
 
 from genrl.data import DataManager
 from genrl.logging_utils.global_defs import get_logger
@@ -67,23 +74,24 @@ class CodeGenerationDataManager(DataManager):
         assert self.num_transplant_trees >= 0
 
         # Load datasets from local cache using streaming to avoid disk space issues
-        get_logger().info("Loading MBPP dataset from local cache...")
+        # Offline mode is set at module level to prevent any network calls
+        get_logger().info("Loading MBPP dataset from local cache (OFFLINE MODE)...")
         self.local_dataset_mbpp = load_dataset(
             "google-research-datasets/mbpp",
             split="train",
             cache_dir=cache_dir,
-            streaming=True  # Keep streaming=True to use cached data without loading all
+            streaming=True
         )
         self.local_dataset_mbpp = self.local_dataset_mbpp.map(
             lambda x: add_source_dataset(x, 'mbpp')
         )
 
-        get_logger().info("Loading Code Contests dataset from local cache...")
+        get_logger().info("Loading Code Contests dataset from local cache (OFFLINE MODE)...")
         self.local_dataset_cc = load_dataset(
             "deepmind/code_contests",
             split="train",
             cache_dir=cache_dir,
-            streaming=True  # Keep streaming=True to use cached data without loading all
+            streaming=True
         )
         self.local_dataset_cc = self.local_dataset_cc.map(
             lambda x: add_source_dataset(x, 'code_contests')

@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Tuple
 import random
 from copy import deepcopy
 
-from datasets import Dataset, load_dataset, concatenate_datasets
+from datasets import Dataset, load_dataset, concatenate_datasets, load_from_disk
 
 from genrl.data import DataManager
 from genrl.logging_utils.global_defs import get_logger
@@ -50,11 +50,13 @@ class CodeGenerationDataManager(DataManager):
         batch_size: int = 2,
         local_batch_size: int = 1,
         proposer_batch_size: int = 1,
+        cache_dir: str = "~/.cache/huggingface/hub",
         **kwargs,
     ):
         """Initialize the CodeGenerationDataManager.
 
         Args:
+            cache_dir: Path to the HuggingFace cache directory containing datasets
         """
 
         self.system_prompt = SYSTEM_PROMPTS.get(
@@ -64,22 +66,46 @@ class CodeGenerationDataManager(DataManager):
         self.num_transplant_trees = kwargs.get("num_transplant_trees", 1)
         assert self.num_transplant_trees >= 0
 
-        self.local_dataset_mbpp = load_dataset("google-research-datasets/mbpp", streaming=True)
-        self.local_dataset_mbpp = self.local_dataset_mbpp.map(lambda x: add_source_dataset(x, 'mbpp'))
+        # Load datasets from local cache using streaming to avoid disk space issues
+        get_logger().info("Loading MBPP dataset from local cache...")
+        self.local_dataset_mbpp = load_dataset(
+            "google-research-datasets/mbpp",
+            split="train",
+            cache_dir=cache_dir,
+            streaming=True  # Keep streaming=True to use cached data without loading all
+        )
+        self.local_dataset_mbpp = self.local_dataset_mbpp.map(
+            lambda x: add_source_dataset(x, 'mbpp')
+        )
 
-        self.local_dataset_cc = load_dataset("deepmind/code_contests", streaming=True)
-        self.local_dataset_cc = self.local_dataset_cc.map(lambda x: add_source_dataset(x, 'code_contests'))
+        get_logger().info("Loading Code Contests dataset from local cache...")
+        self.local_dataset_cc = load_dataset(
+            "deepmind/code_contests",
+            split="train",
+            cache_dir=cache_dir,
+            streaming=True  # Keep streaming=True to use cached data without loading all
+        )
+        self.local_dataset_cc = self.local_dataset_cc.map(
+            lambda x: add_source_dataset(x, 'code_contests')
+        )
 
-        self.local_dataset = concatenate_datasets([self.local_dataset_mbpp['train'], 
-                                                   self.local_dataset_cc['train']])
+        # Concatenate the datasets (streaming datasets)
+        self.local_dataset = concatenate_datasets([
+            self.local_dataset_mbpp, 
+            self.local_dataset_cc
+        ])
         
         self.local_batch_size = local_batch_size
         self.batch_size = batch_size
         self.proposer_batch_size = proposer_batch_size
-        assert self.local_batch_size + self.proposer_batch_size == self.batch_size, f"Batch sizes must sum to total batch size, got {self.local_batch_size} and {self.proposer_batch_size}"
+        assert self.local_batch_size + self.proposer_batch_size == self.batch_size, \
+            f"Batch sizes must sum to total batch size, got {self.local_batch_size} and {self.proposer_batch_size}"
 
+        # For streaming datasets, create batched iterator
         self.local_dataset = self.local_dataset.batch(batch_size=self.local_batch_size)
         self.local_dataset_iter = iter(self.local_dataset)
+        
+        get_logger().info(f"Loaded datasets from local cache in streaming mode")
 
     def initialize(self, backend: HivemindBackend):
         self.backend = backend
@@ -171,19 +197,6 @@ class CodeGenerationDataManager(DataManager):
     def prepare_states(
         self, current_state: GameState, swarm_states: Dict[Any, Any]
     ) -> Dict[Any, Dict[Any, List[Tuple[Any]]]]:
-        latest_state = current_state.get_latest_state()
-        for agent in latest_state:
-            for batch_id in latest_state[agent]:
-                for node_idx, node_state in enumerate(latest_state[agent][batch_id]):
-                    latest_state[agent][batch_id][node_idx] = (
-                        self.to_world_state(node_state)
-                    )
-        return latest_state
-
-
-    def prepare_states(
-        self, current_state: GameState, swarm_states: Dict[Any, Any]
-    ) -> Dict[Any, Dict[Any, List[Tuple[Any]]]]:
         if self.num_transplant_trees > 0:
             trees = current_state.trees
             transplants = self.transplant_trees(
@@ -266,8 +279,10 @@ class CodeGenerationDataManager(DataManager):
             try:
                 local_data = next(self.local_dataset_iter)
             except StopIteration:
+                # Reset iterator when exhausted
                 self.local_dataset_iter = iter(self.local_dataset)
                 local_data = next(self.local_dataset_iter)
+            
             local_data = prepare_local_batch(local_data)
         else:
             local_data = []
